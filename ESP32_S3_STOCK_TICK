@@ -1,0 +1,83 @@
+//   12/2/25 - Rev 1 - working code with sudo stock prices on a 8 x 64 array of LED's 
+//           Generated partially from perplexity and Claude 
+//           Further characterization of current draw on LED's needs to be performed to optimze power supply requirements, currently using 5V/8A (40W) supply
+//           Using ESP32-S3 development board with data pin connected to GPIO pin 16, goal is to have this product standalone
+
+
+#include <Adafruit_GFX.h>
+#include <Adafruit_NeoMatrix.h>
+#include <Adafruit_NeoPixel.h>
+
+#define PIN 16
+#define WIDTH 64   // Two 32-wide matrices side-by-side
+#define HEIGHT 8   // Still 8 tall
+
+// Create matrix object for two daisy-chained 32x8 matrices
+// This creates a 64x8 display (64 wide, 8 tall)
+Adafruit_NeoMatrix matrix = Adafruit_NeoMatrix(
+  WIDTH, HEIGHT, PIN,
+  NEO_MATRIX_TOP     + NEO_MATRIX_LEFT +
+  NEO_MATRIX_COLUMNS + NEO_MATRIX_ZIGZAG,
+  NEO_GRB            + NEO_KHZ800
+);
+
+// Stock data: Symbol, Price, Change %
+struct Stock {
+  const char* symbol;
+  float price;
+  float changePercent;
+};
+
+Stock stocks[] = {
+  {"AAPL", 285.20, +0.74},
+  {"NVDA", 181.36, -2.81},
+  {"MSFT", 493.79, -2.70},
+  {"AMZN", 226.02, +2.42},
+  {"GOOGL", 316.91, +5.80}
+};
+
+const int numStocks = 5;
+int x = WIDTH;
+int currentStock = 0;
+char displayText[50];
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("Dual Matrix Stock Ticker Display - 64x8");
+  
+  matrix.begin();
+  matrix.setTextWrap(false);
+  matrix.setBrightness(30);
+  matrix.setTextColor(matrix.Color(0, 255, 100));
+}
+
+void loop() {
+  matrix.fillScreen(0);
+  
+  // Format stock text: "AAPL $285.20 +0.74%  "
+  sprintf(displayText, "%s $%.2f %+.2f%%  ", 
+          stocks[currentStock].symbol, 
+          stocks[currentStock].price, 
+          stocks[currentStock].changePercent);
+  
+  // Set color based on change
+  if (stocks[currentStock].changePercent > 0) {
+    matrix.setTextColor(matrix.Color(0, 255, 0));  // Green for positive
+  } else if (stocks[currentStock].changePercent < 0) {
+    matrix.setTextColor(matrix.Color(255, 0, 0));  // Red for negative
+  } else {
+    matrix.setTextColor(matrix.Color(255, 255, 0)); // Yellow for no change
+  }
+  
+  matrix.setCursor(x, 0);  // Position at top
+  matrix.print(displayText);
+  
+  // Scroll left
+  if(--x < -150) {  // Adjusted for normal text on wider display
+    x = matrix.width();
+    currentStock = (currentStock + 1) % numStocks;  // Next stock
+  }
+  
+  matrix.show();
+  delay(50);  // Scroll speed
+}
