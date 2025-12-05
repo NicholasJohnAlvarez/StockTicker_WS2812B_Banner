@@ -3,7 +3,8 @@
 //           Further characterization of current draw on LED's needs to be performed to optimze power supply requirements, currently using 5V/8A (40W) supply
 //           Using ESP32-S3 development board with data pin connected to GPIO pin 16, goal is to have this product standalone
 //           - Rev 2 - adding Wifi connectivity and real time stock market data
-//   12/3/25 - Rev 3 - switched to Finnhub API (much faster, 60 requests/minute)
+//   12/3/25 - Rev 3 - switched to Finnhub API (much faster, 60 requests/minute
+//   12/4/25 - Rev 4 - updated loading to only occur on initial boot, implemented dual core so updates happen independent of scrolling text. 
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -18,6 +19,7 @@ const char* password = "sweatequity";
 
 // Finnhub API Key - GET FREE KEY AT: https://finnhub.io/register
 const char* finnhubKey = "d4ocbmpr01quuso8tlkgd4ocbmpr01quuso8tll0";
+
 
 #define PIN 16
 #define WIDTH 64
@@ -48,7 +50,12 @@ int x = WIDTH;
 int currentStock = 0;
 char displayText[50];
 unsigned long lastUpdate = 0;
-const unsigned long updateInterval = 60000; // Update every 60 seconds (well within 60/min limit)
+const unsigned long updateInterval = 60000; // Update every 60 seconds
+bool isInitialBoot = true;
+
+// Task handle for background updates
+TaskHandle_t updateTaskHandle = NULL;
+bool updateTaskRunning = false;
 
 // Function to display a message on the LED matrix
 void showMessage(const char* message, uint16_t color, int duration) {
@@ -149,15 +156,17 @@ bool fetchSingleStock(int index) {
   }
 }
 
-bool updateAllStocks() {
+bool updateAllStocks(bool showProgress) {
   Serial.println("\n=== Updating Stock Data ===");
   int successCount = 0;
   
   for (int i = 0; i < numStocks; i++) {
-    // Show progress on LED matrix
-    char progressMsg[20];
-    snprintf(progressMsg, sizeof(progressMsg), "%d/%d %s", i+1, numStocks, stockSymbols[i].c_str());
-    showMessage(progressMsg, matrix.Color(0, 255, 255), 500);
+    // Show progress on LED matrix only if requested (initial boot)
+    if (showProgress) {
+      char progressMsg[20];
+      snprintf(progressMsg, sizeof(progressMsg), "%d/%d %s", i+1, numStocks, stockSymbols[i].c_str());
+      showMessage(progressMsg, matrix.Color(0, 255, 255), 500);
+    }
     
     bool success = fetchSingleStock(i);
     if (success) {
@@ -172,6 +181,19 @@ bool updateAllStocks() {
   
   Serial.printf("=== Stock Update Complete: %d/%d successful ===\n\n", successCount, numStocks);
   return (successCount > 0); // Return true if at least one stock succeeded
+}
+
+// Background task for stock updates (runs on Core 0)
+void updateStocksTask(void * parameter) {
+  while (true) {
+    if (updateTaskRunning) {
+      Serial.println("\n--- Background stock refresh task started ---");
+      updateAllStocks(false); // Silent update, no progress display
+      updateTaskRunning = false;
+      Serial.println("--- Background refresh task complete ---\n");
+    }
+    delay(100); // Small delay to prevent task from hogging CPU
+  }
 }
 
 void setup() {
@@ -205,24 +227,40 @@ void setup() {
   }
   
   // Initial stock data fetch (takes ~10 seconds for 8 stocks)
-  bool success = updateAllStocks();
+  // Show progress only on initial boot
+  bool success = updateAllStocks(true);
   
   if (success) {
     showMessage("READY!", matrix.Color(0, 255, 0), 2000);
+    isInitialBoot = false; // Mark initial boot as complete
   } else {
     showMessage("DATA FAIL", matrix.Color(255, 0, 0), 3000);
   }
+  
+  // Create background task for stock updates on Core 0
+  // Display runs on Core 1 (default loop() core)
+  xTaskCreatePinnedToCore(
+    updateStocksTask,   // Task function
+    "UpdateStocks",     // Task name
+    10000,              // Stack size
+    NULL,               // Parameters
+    1,                  // Priority
+    &updateTaskHandle,  // Task handle
+    0                   // Core 0 (loop runs on Core 1)
+  );
+  
+  Serial.println("Background update task created on Core 0");
 }
 
 void loop() {
-  // Check if it's time to update stock data (every 60 seconds)
-  if (millis() - lastUpdate > updateInterval) {
-    Serial.println("\n--- Refreshing all stocks ---");
-    updateAllStocks();
+  // Trigger background update every 60 seconds (runs on separate core)
+  if (!isInitialBoot && !updateTaskRunning && (millis() - lastUpdate > updateInterval)) {
+    Serial.println("Triggering background update...");
+    updateTaskRunning = true;
     lastUpdate = millis();
   }
   
-  // Display stock ticker
+  // Display stock ticker (runs continuously on Core 1, never blocked)
   matrix.fillScreen(0);
   
   // Format stock text: "SPY $485.20 +0.74%  "
@@ -257,4 +295,3 @@ void loop() {
   matrix.show();
   delay(50);
 }
-
